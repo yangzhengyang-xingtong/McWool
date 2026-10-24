@@ -1,0 +1,10 @@
+# 本地运行产物
+mcwool_report_*.html
+*.log
+__pycache__/
+*.pyc
+
+# 千万不要提交 Token
+.mcwool_token
+*.token
+.env
