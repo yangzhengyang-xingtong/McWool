@@ -8,12 +8,15 @@ McWool · 麦门羊毛代理人
 基于麦当劳官方 MCP（https://mcp.mcd.cn，Token 于 https://open.mcd.cn 申请）。
 
 用法：
-    python mcwool.py daily                # 每日例行：领券 + 积分 + 抽奖建议 + 战报
+    python mcwool.py daily                # 每日例行：领券 + 积分 + 券到期预警 + 战报
     python mcwool.py claim                # 一键领取麦麦省所有可领优惠券
-    python mcwool.py coupons              # 查看我持有的优惠券
+    python mcwool.py coupons              # 查看我持有的优惠券（--expiring 只看快过期的）
     python mcwool.py points               # 查询积分账户（含即将过期提醒）
+    python mcwool.py redeem               # 积分兑换雷达：我的积分能在麦麦商城换什么
     python mcwool.py lottery              # 查看积分抽奖活动信息
     python mcwool.py lottery --draw 5     # 自动抽 5 次（消耗积分，谨慎使用）
+    python mcwool.py prizes               # 我的中奖记录
+    python mcwool.py events               # 活动雷达：本月营销活动日历
     python mcwool.py daily --demo         # 演示模式：无需 Token，内置样例数据
 
 Token 三种配置方式（优先级从高到低）：
@@ -353,6 +356,46 @@ def parse_points(account) -> dict:
     }
 
 
+def _to_number(v):
+    """尽量把字段值转成数字，失败返回 None。"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        m = re.search(r"-?\d+(?:\.\d+)?", v)
+        return float(m.group()) if m else None
+    return None
+
+
+def _parse_date(s: str):
+    s = (s or "").strip()[:10]
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return dt.datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def days_left(deadline: str):
+    d = _parse_date(deadline)
+    return (d - dt.date.today()).days if d else None
+
+
+def _print_event(it):
+    if not isinstance(it, dict):
+        print(f"     · {it}")
+        return
+    name = item_title(it)
+    date = _find_first(it, ["date", "activityDate", "time", "period"], "")
+    desc = _find_first(it, ["desc", "description", "remark", "detail"], "")
+    line = f"     📌 {name}" + (dim(f"  · {date}") if date else "")
+    print(line)
+    if desc:
+        print(dim(f"        {desc}"))
+
+
 # ---------------------------------------------------------------- 演示数据
 
 
@@ -405,6 +448,44 @@ def demo_payloads():
             "code": 200,
             "data": {"isWin": True, "prizeName": "中薯条免费兑换券"},
         },
+        "mall_products": {
+            "success": True,
+            "code": 200,
+            "data": {
+                "products": [
+                    {"productName": "中薯条免费兑换券", "points": 500, "type": "虚拟券"},
+                    {"productName": "麦乐鸡 5 块兑换券", "points": 800, "type": "虚拟券"},
+                    {"productName": "巨无霸兑换券", "points": 1200, "type": "虚拟券"},
+                    {"productName": "板烧鸡腿堡兑换券", "points": 1000, "type": "虚拟券"},
+                    {"productName": "可口可乐中杯兑换券", "points": 300, "type": "虚拟券"},
+                    {"productName": "BuddyCat 贴纸一套", "points": 1500, "type": "实物"},
+                    {"productName": "麦当劳品牌帆布袋", "points": 3000, "type": "实物"},
+                ]
+            },
+        },
+        "prizes": {
+            "success": True,
+            "code": 200,
+            "data": {
+                "records": [
+                    {"prizeName": "中薯条免费兑换券", "winTime": "2026-10-20 12:31:02"},
+                    {"prizeName": "10 积分", "winTime": "2026-10-18 09:12:45"},
+                    {"prizeName": "麦乐鸡 5 折券", "winTime": "2026-10-12 18:44:10"},
+                ]
+            },
+        },
+        "calendar": {
+            "success": True,
+            "code": 200,
+            "data": {
+                "activities": [
+                    {"name": "1024 程序员节·10.24 秒找 Bug", "status": "进行中", "date": "10.24 - 10.25", "desc": "线下门店挑战抽周边"},
+                    {"name": "麦麦省·会员特价周", "status": "进行中", "date": "10.20 - 10.27", "desc": "多款套餐立减"},
+                    {"name": "板烧鸡腿堡买一送一", "status": "未开始", "date": "10.28 - 10.30", "desc": "APP 下单同品类第二份半价"},
+                    {"name": "早餐半价月", "status": "已结束", "date": "09.01 - 09.30", "desc": "6:00-10:30 早餐时段"},
+                ]
+            },
+        },
         "time": {"success": True, "data": {"datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}},
     }
 
@@ -443,22 +524,33 @@ class McWool:
         data = self.call("query-my-coupons", "coupons")
         return _iter_items(data) or []
 
-    def do_coupons(self):
+    def do_coupons(self, expiring_only=False):
         rule("🎫 我的优惠券（query-my-coupons）")
         items = self._fetch_coupons()
         if not items:
             print(dim("  暂无优惠券，先运行 claim 一键领券吧"))
             rule_end()
             return []
+        # 按剩余有效期升序，快过期的排最前
+        items = sorted(items, key=lambda it: (days_left(item_deadline(it)) is None, days_left(item_deadline(it)) or 999))
+        shown = 0
         for it in items:
-            amt = item_amount(it)
             dl = item_deadline(it)
-            line = f"  🎟  {item_title(it)}"
+            left = days_left(dl)
+            urgent = left is not None and left <= 3
+            if expiring_only and not urgent:
+                continue
+            amt = item_amount(it)
+            line = f"  {'⏰' if urgent else '🎟'}  {item_title(it)}"
             if amt:
                 line += f"  {gold(amt)}"
-            if dl:
-                line += dim(f"  · 有效期至 {dl[:10]}")
+            if left is not None:
+                tag = red(f" 仅剩 {left} 天") if urgent else dim(f" 剩 {left} 天")
+                line += tag
             print(line)
+            shown += 1
+        if expiring_only and shown == 0:
+            print(green("  没有快过期的券，羊毛很安全 ✅"))
         rule_end()
         return items
 
@@ -509,25 +601,121 @@ class McWool:
         print(f"  合计: {wins}/{times} 中奖")
         rule_end()
 
+    # -- 积分兑换雷达 --------------------------------------------------------
+
+    def do_redeem(self):
+        rule("🛍 积分兑换雷达（query-my-account + mall-points-products）")
+        account = self.call("query-my-account", "points")
+        p = parse_points(account)
+        avail = p.get("可用积分")
+        avail_n = float(avail) if _to_number(avail) is not None else 0
+        print(f"  可用积分: {bold(str(avail))}")
+
+        products = _iter_items(self.call("mall-points-products", "mall_products")) or []
+        affordable = []
+        next_up = None
+        for it in products:
+            pts = _to_number(_find_first(it, ["points", "needPoints", "exchangePoints", "point"]))
+            if pts is None:
+                continue
+            if pts <= avail_n:
+                affordable.append((int(pts), it))
+            elif next_up is None or pts < next_up[0]:
+                next_up = (int(pts), it)
+        affordable.sort(key=lambda x: x[0])
+
+        if affordable:
+            print(green(f"\n  ✅ 现在就能兑换 {len(affordable)} 件："))
+            for pts, it in affordable:
+                t = item_title(it)
+                ptype = _find_first(it, ["type", "productType"], "")
+                print(f"     🎁 {t}  {gold(f'{pts} 积分')}" + (dim(f" · {ptype}") if ptype else ""))
+        else:
+            print(dim("\n  暂时没有积分能换的商品"))
+        if next_up:
+            gap = next_up[0] - int(avail_n)
+            print(yellow(f"\n  ⏫ 再攒 {bold(str(gap))} 积分可换: {item_title(next_up[1])}（{next_up[0]} 积分）"))
+            print(dim("     提示：签到/消费攒积分，或用 lottery --draw 消耗即将过期积分"))
+        rule_end()
+
+    # -- 我的奖品 ------------------------------------------------------------
+
+    def do_prizes(self):
+        rule("🏆 我的中奖记录（query-my-prizes）")
+        items = _iter_items(self.call("query-my-prizes", "prizes")) or []
+        if not items:
+            print(dim("  还没有中奖记录，试试 lottery --draw"))
+            rule_end()
+            return
+        for it in items:
+            name = item_title(it)
+            when = _find_first(it, ["winTime", "createTime", "time", "date"], "")
+            print(f"  🎉 {name}" + (dim(f"  · {when}") if when else ""))
+        rule_end()
+
+    # -- 活动雷达 ------------------------------------------------------------
+
+    def do_events(self):
+        rule("📅 活动雷达（campaign-calendar）")
+        items = _iter_items(self.call("campaign-calendar", "calendar")) or []
+        live, soon, done = [], [], []
+        for it in items:
+            status = str(_find_first(it, ["status", "activityStatus"], "") or "")
+            if "结束" in status or "完" in status:
+                done.append(it)
+            elif "未" in status or "即将" in status or "待" in status:
+                soon.append(it)
+            else:
+                live.append(it)
+        if live:
+            print(green("  🔥 进行中："))
+            for it in live:
+                _print_event(it)
+        if soon:
+            print(yellow("\n  ⏰ 即将开始："))
+            for it in soon:
+                _print_event(it)
+        if done:
+            print(dim("\n  · 已结束：") + dim("、".join(item_title(x) for x in done[:4])))
+        if not (live or soon or done):
+            print(dim("  本月暂无活动信息"))
+        rule_end()
+
     # -- 羊毛战报 ----------------------------------------------------------
 
     def build_report(self, coupons, points, lottery_name=None, drawn=None):
         today = dt.date.today().strftime("%Y-%m-%d")
         total_amount = 0.0
         coupon_lines = []
+        king, king_amt = None, 0.0
         for it in coupons:
             amt = item_amount(it)
             m = re.search(r"(\d+(?:\.\d+)?)", amt or "")
-            if m:
-                total_amount += float(m.group(1))
+            val = float(m.group(1)) if m else 0.0
+            total_amount += val
+            dl = item_deadline(it)
+            left = days_left(dl)
             coupon_lines.append(
-                {"title": item_title(it), "amount": amt, "deadline": item_deadline(it)[:10]}
+                {
+                    "title": item_title(it),
+                    "amount": amt,
+                    "deadline": dl[:10],
+                    "days_left": left,
+                    "urgent": left is not None and left <= 3,
+                }
             )
+            if val > king_amt:
+                king, king_amt = it, val
         p = points or {}
         report = {
             "date": today,
-            "coupons": coupon_lines,
+            "coupons": sorted(
+                coupon_lines, key=lambda c: (c["days_left"] is None, c["days_left"] or 999)
+            ),
             "coupon_total": round(total_amount, 1),
+            "coupon_king": item_title(king) if king else "",
+            "coupon_king_amt": f"¥{king_amt:g}" if king else "",
+            "expiring_coupons": [c for c in coupon_lines if c["urgent"]],
             "points": {k: v for k, v in p.items() if v not in (None, "")},
             "expiring": p.get("即将过期"),
             "expire_date": str(p.get("过期时间") or "")[:10],
@@ -550,10 +738,16 @@ class McWool:
         print(gold("├" + "─" * W + "┤"))
         row()
         lines = [f"🐑 持有优惠券 {len(r['coupons'])} 张，合计价值约 ¥{r['coupon_total']}"]
+        if r.get("coupon_king"):
+            lines.append(f"👑 今日券王: {r['coupon_king']}（{r['coupon_king_amt']}）")
         for cp in r["coupons"][:6]:
-            lines.append(f"   🎟 {cp['title']}" + (f"（{cp['amount']}）" if cp["amount"] else ""))
+            mark = "⏰" if cp.get("urgent") else "🎟"
+            lines.append(f"   {mark} {cp['title']}" + (f"（{cp['amount']}）" if cp["amount"] else ""))
         if len(r["coupons"]) > 6:
             lines.append(f"   … 还有 {len(r['coupons']) - 6} 张")
+        if r.get("expiring_coupons"):
+            names = "、".join(c["title"] for c in r["expiring_coupons"][:3])
+            lines.append(f"⏰ {len(r['expiring_coupons'])} 张券 3 天内到期: {names}")
         for k, v in r["points"].items():
             lines.append(f"💰 {k}: {v}")
         if r.get("expiring") and str(r["expiring"]) not in ("0", "0.0", "None"):
@@ -571,7 +765,9 @@ class McWool:
     def save_report_html(self, r, path=None):
         path = path or f"mcwool_report_{dt.datetime.now():%Y%m%d_%H%M}.html"
         rows = "".join(
-            f"<tr><td>🎟 {cp['title']}</td><td class='amt'>{cp['amount']}</td><td>{cp['deadline']}</td></tr>"
+            f"<tr><td>{'⏰' if cp.get('urgent') else '🎟'} {cp['title']}</td>"
+            f"<td class='amt'>{cp['amount']}</td>"
+            f"<td>{('仅剩 ' + str(cp['days_left']) + ' 天') if cp.get('days_left') is not None else cp['deadline']}</td></tr>"
             for cp in r["coupons"]
         )
         pts_keys = ["可用积分", "累计积分", "即将过期"]
@@ -581,10 +777,24 @@ class McWool:
             if k in r["points"]
         )
         expiring_html = ""
+        alerts = []
         if r.get("expiring") and str(r["expiring"]) not in ("0", "0.0", "None"):
-            expiring_html = (
-                f"<div class='alert'>⏰ {r['expiring']} 积分将于 {r.get('expire_date') or '近期'} 过期，"
-                f"建议抽奖或去麦麦商城兑换！</div>"
+            alerts.append(
+                f"⏰ {r['expiring']} 积分将于 {r.get('expire_date') or '近期'} 过期，"
+                f"建议抽奖或去麦麦商城兑换！"
+            )
+        if r.get("expiring_coupons"):
+            alerts.append(
+                "⏰ 有 " + str(len(r["expiring_coupons"])) + " 张券 3 天内到期："
+                + "、".join(c["title"] for c in r["expiring_coupons"][:3])
+            )
+        if alerts:
+            expiring_html = "".join(f"<div class='alert'>{a}</div>" for a in alerts)
+        king_html = ""
+        if r.get("coupon_king"):
+            king_html = (
+                f"<div class='king'>👑 今日券王：{r['coupon_king']} "
+                f"<b>{r['coupon_king_amt']}</b></div>"
             )
         demo_badge = "<span class='badge'>演示数据</span>" if r["demo"] else ""
         html = f"""<!DOCTYPE html>
@@ -614,6 +824,10 @@ class McWool:
   td.amt {{ color:var(--red); font-weight:700; white-space:nowrap; text-align:right; }}
   .alert {{ margin-top:14px; background:#ffeceb; color:var(--red); border-radius:12px;
            padding:10px 12px; font-size:13px; font-weight:600; }}
+  .alert + .alert {{ margin-top:8px; }}
+  .king {{ margin-top:14px; background:#fff3d6; border:1px dashed #e0b64f; color:#7a5a10;
+          border-radius:12px; padding:10px 12px; font-size:13px; }}
+  .king b {{ font-size:16px; }}
   .foot {{ margin-top:18px; text-align:center; color:#a08; font-size:12px; }}
   .foot b {{ color:var(--dark); }}
   .foot .meme {{ font-size:13px; color:#666; margin-top:4px; }}
@@ -631,6 +845,7 @@ class McWool:
       <div class="stat"><div class="k">券面额合计</div><div class="v">¥{r['coupon_total']}</div></div>
     </div>
     <div class="big" style="margin-top:14px">{pts}</div>
+    {king_html}
     {expiring_html}
     <h2>🎫 我的券包</h2>
     <table>{rows}</table>
@@ -642,6 +857,49 @@ class McWool:
 </div></body></html>"""
         pathlib.Path(path).write_text(html, encoding="utf-8")
         return path
+
+    # -- 战报推送（Server酱 / PushPlus / Bark / 通用 Webhook） ----------------
+
+    def push_report(self, r) -> bool:
+        """把战报摘要推送到微信等渠道，未配置则跳过。"""
+        url = os.environ.get("MCWOOL_PUSH_URL")
+        if not url:
+            sendkey = os.environ.get("SERVERCHAN_SENDKEY") or os.environ.get("FTQQ_SENDKEY")
+            if sendkey:
+                url = f"https://sctapi.ftqq.com/{sendkey}.send"
+        if not url:
+            token = os.environ.get("PUSHPLUS_TOKEN")
+            if token:
+                url = "https://www.pushplus.plus/send"
+        if not url:
+            return False
+        title = f"🍟 今日麦门羊毛战报 {r['date']}"
+        body_lines = [
+            f"- 持有优惠券 {len(r['coupons'])} 张，合计约 ¥{r['coupon_total']}",
+        ]
+        if r.get("coupon_king"):
+            body_lines.append(f"- 👑 券王: {r['coupon_king']}（{r['coupon_king_amt']}）")
+        if r.get("expiring_coupons"):
+            body_lines.append(f"- ⏰ {len(r['expiring_coupons'])} 张券 3 天内到期，快用！")
+        for k, v in r["points"].items():
+            body_lines.append(f"- {k}: {v}")
+        if r.get("expiring") and str(r["expiring"]) not in ("0", "0.0", "None"):
+            body_lines.append(f"- ⏰ {r['expiring']} 积分 {r.get('expire_date') or '即将'} 过期，建议抽奖/兑换")
+        body_lines.append("\n麦门永存 🙏 —— McWool 麦门羊毛代理人")
+        desp = "\n".join(body_lines)
+        payload = {"title": title, "desp": desp, "content": desp, "tpl": "markdown"}
+        if "pushplus" in url:
+            payload = {"token": os.environ["PUSHPLUS_TOKEN"], "title": title, "content": desp, "template": "markdown"}
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            ok = resp.status_code == 200
+            print((green if ok else red)(
+                f"\n📲 战报已推送（{resp.status_code}）" if ok else f"\n✖ 推送失败: {resp.status_code} {resp.text[:120]}"
+            ))
+            return ok
+        except requests.RequestException as e:
+            print(red(f"\n✖ 推送失败: {e}"))
+            return False
 
 
 # ---------------------------------------------------------------- 命令入口
@@ -688,6 +946,7 @@ def cmd_daily(args):
     wool.print_report(r)
     path = wool.save_report_html(r)
     print(green(f"\n📸 战报卡片已生成: {path}（浏览器打开即可截图分享）"))
+    wool.push_report(r)
     try:
         import webbrowser
         webbrowser.open(pathlib.Path(path).resolve().as_uri())
@@ -708,7 +967,29 @@ def cmd_coupons(args):
     wool = McWool(None, demo=args.demo) if args.demo else McWool(make_client(args))
     if not args.demo and wool.client is None:
         sys.exit(1)
-    wool.do_coupons()
+    wool.do_coupons(expiring_only=getattr(args, "expiring", False))
+
+
+def cmd_redeem(args):
+    wool = McWool(None, demo=args.demo) if args.demo else McWool(make_client(args))
+    if not args.demo and wool.client is None:
+        sys.exit(1)
+    print(f"  {LOGO}\n")
+    wool.do_redeem()
+
+
+def cmd_prizes(args):
+    wool = McWool(None, demo=args.demo) if args.demo else McWool(make_client(args))
+    if not args.demo and wool.client is None:
+        sys.exit(1)
+    wool.do_prizes()
+
+
+def cmd_events(args):
+    wool = McWool(None, demo=args.demo) if args.demo else McWool(make_client(args))
+    if not args.demo and wool.client is None:
+        sys.exit(1)
+    wool.do_events()
 
 
 def cmd_points(args):
@@ -747,8 +1028,18 @@ def main():
     p = sub.add_parser("claim", help="一键领取麦麦省所有可领优惠券", parents=[common])
     p.set_defaults(func=cmd_claim)
 
-    p = sub.add_parser("coupons", help="查看我持有的优惠券", parents=[common])
+    p = sub.add_parser("coupons", help="查看我持有的优惠券（--expiring 只看快过期的）", parents=[common])
+    p.add_argument("--expiring", action="store_true", help="只显示 3 天内到期的券")
     p.set_defaults(func=cmd_coupons)
+
+    p = sub.add_parser("redeem", help="积分兑换雷达：我的积分能换什么", parents=[common])
+    p.set_defaults(func=cmd_redeem)
+
+    p = sub.add_parser("prizes", help="我的中奖记录", parents=[common])
+    p.set_defaults(func=cmd_prizes)
+
+    p = sub.add_parser("events", help="活动雷达：本月营销活动日历", parents=[common])
+    p.set_defaults(func=cmd_events)
 
     p = sub.add_parser("points", help="查询积分账户", parents=[common])
     p.set_defaults(func=cmd_points)

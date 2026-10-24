@@ -34,19 +34,25 @@
 
 | 命令 | 干什么 | 使用的官方 MCP 工具 |
 |---|---|---|
-| `daily` | 每日例行：领券 → 积分体检 → 羊毛战报（终端 + HTML 卡片） | `auto-bind-coupons` `query-my-coupons` `query-my-account` |
+| `daily` | 每日例行：领券 → 积分体检 → 券到期预警 → 羊毛战报（终端 + HTML 卡片） | `auto-bind-coupons` `query-my-coupons` `query-my-account` |
 | `claim` | **一键领取**麦麦省所有可领优惠券 | `auto-bind-coupons` |
-| `coupons` | 查看持有的券 + 面额 + 有效期 | `query-my-coupons` |
+| `coupons` | 券包盘点：按有效期排序 + 面额；`--expiring` 只看快过期的 | `query-my-coupons` |
 | `points` | 积分账户体检，**即将过期积分红色预警** | `query-my-account` |
-| `lottery` | 查看积分抽奖活动；`--draw N` 自动抽 N 次 | `query-lottery-info` `draw-lottery` |
+| `redeem` | **积分兑换雷达**：我的积分现在能换什么商城商品，还差多少能换下一档 | `query-my-account` `mall-points-products` |
+| `lottery` | 积分抽奖信息；`--draw N` 自动抽 N 次 | `query-lottery-info` `draw-lottery` |
+| `prizes` | 我的中奖记录 | `query-my-prizes` |
+| `events` | **活动雷达**：本月营销活动日历（进行中 / 即将开始） | `campaign-calendar` |
 
 **亮点**
 
 - 🐑 **真·代理人**：`auto-bind-coupons` 一次把所有可领的券全部领光，不用一张张点
-- ⏰ **积分看护**：即将过期的积分红色高亮，提醒你抽奖/兑换，一分不让麦当劳白赚
-- 📸 **羊毛战报**：每日生成麦当劳配色的分享卡片，晒到群里就是最好的炫耀
+- ⏰ **双重看护**：即将过期的**积分** + 3 天内到期的**券** 双红色预警，一分一张都不浪费
+- 👑 **今日券王**：战报自动评出面额最高的券，晒图更有节目效果
+- 🛍 **积分兑换雷达**：不止提醒过期，还告诉你"现在就能换什么、再攒多少换下一档"
+- 📸 **羊毛战报**：麦当劳配色的分享卡片，晒到群里就是最好的炫耀
+- 🤖 **GitHub Actions 全自动**：Fork/配置 Secret 即可每天 8 点自动薅羊毛 + 微信推送战报
 - 🧯 **零依赖跑演示**：没有 Token？`--demo` 模式 3 秒体验全部功能
-- 🤖 **双形态**：既是独立 CLI，也提供 `SKILL.md`，接入 WorkBuddy / Cursor 等 Agent 直接对话使唤
+- 🐦 **双形态**：既是独立 CLI，也提供 `SKILL.md`，接入 WorkBuddy / Cursor 等 Agent 直接对话使唤
 
 ## 🚀 30 秒上手
 
@@ -96,7 +102,20 @@ python mcwool.py daily
 
 同时生成一张 HTML 战报卡片（自动在浏览器打开），直接截图发朋友圈。
 
-### 进阶：每天自动薅（可选）
+### 进阶一：GitHub Actions 全自动薅羊毛（推荐）
+
+不用自己的电脑挂定时任务——**用 GitHub Actions 当免费羊毛管家**：
+
+1. Fork 或使用本仓库，进入仓库 **Settings → Secrets and variables → Actions**
+2. 新建 Secret：`MCD_MCP_TOKEN` = 你的麦当劳 MCP Token
+3. （可选）配置微信推送，任选其一：
+   - `SERVERCHAN_SENDKEY` = [Server酱](https://sct.ftqq.com/) 的 SendKey（推荐，微信收战报）
+   - `PUSHPLUS_TOKEN` = [PushPlus](https://www.pushplus.plus/) 的 Token
+4. 打开 **Actions** 页启用 `每日自动薅羊毛` 工作流，也可点 **Run workflow** 立即试跑
+
+之后每天北京时间 **08:00** 自动：领券 → 积分看护 → 券到期预警 → 战报推送到微信，战报卡片存档在 Action 构建产物（Artifacts）里。
+
+### 进阶二：本地定时任务（可选）
 
 ```bash
 # Windows 任务计划程序 / Linux crontab 每天早上 8 点
@@ -134,9 +153,13 @@ python mcwool.py daily
         │
         ▼
 ┌─ auto-bind-coupons ──→ 一键领光麦麦省可领的券
-├─ query-my-coupons ───→ 盘点券包（名称/面额/有效期）
+├─ query-my-coupons ───→ 盘点券包（名称/面额/有效期/临期预警）
 ├─ query-my-account ───→ 积分体检（可用/累计/即将过期）
-└─ 汇总生成 ──────────→ 终端战报 + HTML 分享卡片
+└─ 汇总生成 ──────────→ 终端战报 + HTML 分享卡片 + 微信推送
+
+mcwool.py redeem          # 积分兑换雷达（商城商品 × 可用积分）
+mcwool.py events          # 活动雷达（本月活动日历）
+mcwool.py lottery --draw N # 自动抽奖（消耗积分，上限 10 次）
 ```
 
 详见 [`MCP_INTEGRATION.md`](./MCP_INTEGRATION.md)。

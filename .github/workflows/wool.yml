@@ -1,0 +1,46 @@
+name: 每日自动薅羊毛
+
+# 每天北京时间 08:00（UTC 00:00）自动：领券 + 积分看护 + 生成羊毛战报
+# 也可在 Actions 页面手动触发（Run workflow）
+on:
+  schedule:
+    - cron: "0 0 * * *" # UTC 00:00 = 北京时间 08:00
+  workflow_dispatch:
+
+jobs:
+  wool:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 开薅（领券 + 积分看护 + 战报）
+        env:
+          MCD_MCP_TOKEN: ${{ secrets.MCD_MCP_TOKEN }}
+          # 以下推送渠道可选，不配置则跳过推送
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          MCWOOL_PUSH_URL: ${{ secrets.MCWOOL_PUSH_URL }}
+        run: |
+          if [ -z "$MCD_MCP_TOKEN" ]; then
+            echo "未配置 MCD_MCP_TOKEN，请到仓库 Settings → Secrets and variables → Actions 添加"
+            echo "（Token 于 https://open.mcd.cn 控制台申请）"
+            exit 1
+          fi
+          python mcwool.py daily
+
+      - name: 归档今日战报卡片
+        uses: actions/upload-artifact@v4
+        with:
+          name: wool-report-${{ github.run_id }}
+          path: mcwool_report_*.html
+          if-no-files-found: ignore
+          retention-days: 30
