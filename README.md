@@ -65,7 +65,7 @@
 ### 第二步：跑起来
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_NAME/McWool.git
+git clone https://github.com/yangzhengyang-xingtong/McWool.git
 cd McWool
 pip install requests          # 唯一依赖
 
