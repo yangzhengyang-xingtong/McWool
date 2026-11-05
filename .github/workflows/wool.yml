@@ -1,10 +1,7 @@
 name: 每日自动薅羊毛
 
-# 每天北京时间 08:00（UTC 00:00）自动：领券 + 积分看护 + 生成羊毛战报
-# 也可在 Actions 页面手动触发（Run workflow）
+# 2026-11-05 已停用每日定时任务:仅保留 Actions 页面手动触发(Run workflow)
 on:
-  schedule:
-    - cron: "0 0 * * *" # UTC 00:00 = 北京时间 08:00
   workflow_dispatch:
 
 jobs:
